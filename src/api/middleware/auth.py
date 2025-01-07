@@ -2,58 +2,55 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 import jwt
+import os
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-    # Permitir acceso a documentación y health check sin autenticación
-        if request.url.path in ["/docs", "/redoc", "/openapi.json", "/api/v1/health/check"]:
-            return await call_next(request)
+    def __init__(self, app):
+        super().__init__(app)
+        self.secret_key = os.getenv("SECRET_KEY", "your-secret-key-here")
 
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "No authorization header"}
-            )
+    async def dispatch(self, request: Request, call_next):
+        logger.info(f"Processing request to path: {request.url.path}")
+    
+        public_paths = [
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+            "/api/v1/health/check",
+            "/api/v1/token"
+        ]
+        
+        if request.url.path in public_paths:
+            response = await call_next(request)
+            return response  # Asegurar que devolvemos la respuesta
 
         try:
-            token = self.extract_token(auth_header)
-            if not token:
-                raise ValueError("Invalid token format")
-
-            # Verificar el token (ajusta esto según tu sistema de autenticación)
-            payload = self.verify_token(token)
-            request.state.user = payload
-
             response = await call_next(request)
+            if response is None:
+                logger.error("Response is None")
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": "Internal server error"}
+                )
             return response
-
-        except jwt.InvalidTokenError as e:
-            logger.error(f"Invalid token: {str(e)}")
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid token"}
-            )
         except Exception as e:
-            logger.error(f"Authentication error: {str(e)}")
+            logger.error(f"Error in middleware: {str(e)}")
             return JSONResponse(
                 status_code=500,
                 content={"detail": "Internal server error"}
             )
 
-    def extract_token(self, auth_header: str) -> Optional[str]:
+    def _extract_token(self, auth_header: str) -> Optional[str]:  # Añadido guión bajo
         """Extrae el token del header de autorización."""
         parts = auth_header.split()
         if len(parts) == 2 and parts[0].lower() == "bearer":
             return parts[1]
         return None
 
-    def verify_token(self, token: str) -> dict:
+    def _verify_token(self, token: str) -> dict:  # Añadido guión bajo
         """Verifica el token JWT y retorna el payload."""
-        # Ajusta esto con tu clave secreta y algoritmo
-        SECRET_KEY = 'SECRET_KEY'  # En producción, usar variable de entorno
-        return jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return jwt.decode(token, self.secret_key, algorithms=["HS256"])

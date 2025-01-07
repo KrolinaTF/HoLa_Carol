@@ -1,10 +1,8 @@
-from typing import Optional, Dict
+from groq import Groq
 import os
-import httpx
 import logging
-from dotenv import load_dotenv
-
-load_dotenv()
+from typing import Optional, Dict
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +12,8 @@ class GroqClient:
         if not self.api_key:
             raise ValueError("GROQ_API_KEY no encontrada en variables de entorno")
         
-        self.base_url = "https://api.groq.com/v1"
-        self.model = "llama2-70b-4096"  # Puedes cambiar el modelo según necesites
+        self.client = Groq(api_key=self.api_key)
+        self.model = "llama-3.3-70b-versatile"  # El modelo específico que nos proporcionan
         
     async def generate_response(
         self,
@@ -24,53 +22,25 @@ class GroqClient:
         temperature: float = 0.7,
         context: Optional[Dict] = None
     ) -> str:
-        """
-        Genera una respuesta usando la API de Groq.
-        """
         try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-
-            data = {
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-
+            messages = [{"role": "user", "content": prompt}]
             if context:
-                # Añade contexto al prompt si existe
-                data["messages"].insert(0, {
+                messages.insert(0, {
                     "role": "system",
                     "content": str(context)
                 })
 
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=data,
-                    timeout=30.0
-                )
+            chat_completion = self.client.chat.completions.create(
+                messages=messages,
+                model=self.model,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
 
-                response.raise_for_status()
-                result = response.json()
+            return chat_completion.choices[0].message.content
 
-                if "choices" in result and len(result["choices"]) > 0:
-                    return result["choices"][0]["message"]["content"]
-                else:
-                    raise ValueError("No se recibió respuesta válida de Groq")
-
-        except httpx.TimeoutException:
-            logger.error("Timeout al conectar con Groq API")
-            raise
-        except httpx.HTTPError as e:
-            logger.error(f"Error HTTP al conectar con Groq API: {str(e)}")
-            raise
         except Exception as e:
-            logger.error(f"Error inesperado al generar respuesta: {str(e)}")
+            logger.error(f"Error generando respuesta con Groq: {str(e)}")
             raise
 
     async def get_embedding(self, text: str) -> list:
@@ -80,8 +50,6 @@ class GroqClient:
         usaremos una alternativa como el modelo all-MiniLM-L6-v2
         """
         try:
-            from sentence_transformers import SentenceTransformer
-            
             # Inicializar el modelo (esto debería moverse al __init__ en producción)
             model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
             

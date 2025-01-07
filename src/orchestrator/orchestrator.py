@@ -13,6 +13,12 @@ from src.llm.prompt_templates.botanical_prompts import BotanicalPrompts
 from src.llm.prompt_templates.chemical_prompts import ChemicalPrompts
 from src.llm.prompt_templates.physical_prompts import PhysicalPrompts
 from src.llm.prompt_templates.biological_prompts import BiologicalPrompts
+from src.external_apis.pubmed_api import PubMedAPI
+from src.external_apis.pubchem_api import PubChemAPI
+from src.external_apis.nasa_api import NASAAPI
+from src.external_apis.biological_api import UniProtAPI
+from src.external_apis.trefle_api import TrefleAPI
+from src.utils.translator import TranslationService
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +26,18 @@ class Orchestrator:
     def __init__(self):
         self.groq_client = GroqClient()
         self.validator = Validator()
+        self.translator = TranslationService()
+
+        # Inicializar APIs externas
+        self.external_apis = {
+            'pubmed': PubMedAPI(),
+            'pubchem': PubChemAPI(),
+            'nasa': NASAAPI(),
+            'uniprot': UniProtAPI(),
+            'trefle': TrefleAPI()
+        }
         
-        # Inicializar agentes
+        # Inicializar agentes con sus APIs correspondientes
         self.agents = {
             'medical': MedicalAgent(),
             'botanical': BotanicalAgent(),
@@ -46,7 +62,7 @@ class Orchestrator:
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Procesa una consulta coordinando múltiples agentes.
+        Procesa una consulta coordinando múltiples agentes y APIs externas.
         """
         logger.info(f"Procesando consulta: {query}")
         try:
@@ -60,11 +76,20 @@ class Orchestrator:
             )
             session.add(db_query)
             
+            # Recopilar datos de APIs externas
+            api_data = await self._gather_api_data(query)
+            
+            # Enriquecer el contexto con datos de APIs
+            enriched_context = {
+                **(context or {}),
+                "api_data": api_data
+            }
+            
             # Obtener respuestas de cada agente
             responses = {}
             for domain, agent in self.agents.items():
                 try:
-                    agent_response = await agent.process_query(query, context)
+                    agent_response = await agent.process_query(query, enriched_context)
                     responses[domain] = agent_response
                 except Exception as e:
                     logger.error(f"Error en agente {domain}: {str(e)}")
@@ -77,8 +102,11 @@ class Orchestrator:
             integrated_response = await self._integrate_responses(
                 validated_responses,
                 query,
-                context
+                enriched_context
             )
+
+            # Añadir fuentes de APIs a la respuesta
+            integrated_response["api_sources"] = api_data
 
             # Guardar resultado
             result = QueryResult(
@@ -101,15 +129,38 @@ class Orchestrator:
             if 'session' in locals():
                 session.close()
 
+    async def _gather_api_data(self, query: str) -> Dict[str, Any]:
+        """
+        Recopila datos de todas las APIs externas.
+        """
+        api_data = {}
+        try:
+            # Obtener datos de PubMed
+            api_data['pubmed'] = await self.external_apis['pubmed'].search_articles(query)
+            
+            # Obtener datos de PubChem
+            api_data['pubchem'] = await self.external_apis['pubchem'].search_compound(query)
+            
+            # Obtener datos de NASA
+            api_data['nasa'] = await self.external_apis['nasa'].get_space_weather()
+            
+            # Obtener datos de UniProt
+            api_data['uniprot'] = await self.external_apis['uniprot'].search_proteins(query)
+            
+            # Obtener datos de Trefle
+            api_data['trefle'] = await self.external_apis['trefle'].search_plants(query)
+            
+        except Exception as e:
+            logger.error(f"Error recopilando datos de APIs: {str(e)}")
+        
+        return api_data
+
     async def _integrate_responses(
         self,
         responses: Dict[str, Any],
         original_query: str,
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Integra las respuestas de diferentes agentes en una respuesta coherente.
-        """
         try:
             # Crear prompt de integración
             integration_prompt = self._create_integration_prompt(
@@ -118,19 +169,25 @@ class Orchestrator:
                 context
             )
 
+            # Traducir el prompt si es necesario para Groq
+            english_prompt = self.translator.to_english(integration_prompt)
+
             # Obtener respuesta integrada del LLM
-            integrated_text = await self.groq_client.generate_response(
-                integration_prompt,
+            english_response = await self.groq_client.generate_response(
+                english_prompt,
                 temperature=0.7
             )
+
+            # Traducir la respuesta de vuelta a español
+            spanish_response = self.translator.to_spanish(english_response)
 
             # Calcular confianza promedio
             confidence = self._calculate_average_confidence(responses)
 
             return {
-                "response": integrated_text,
+                "response": spanish_response,
                 "confidence": confidence,
-                "sources": responses  # Incluir respuestas originales
+                "sources": responses
             }
 
         except Exception as e:
@@ -160,13 +217,20 @@ class Orchestrator:
                 )
                 integration_prompt += f"\n{domain.upper()}: {domain_prompt}"
 
+        # Añadir información de APIs si está disponible
+        if context and "api_data" in context:
+            integration_prompt += "\n\nDatos de fuentes externas:"
+            for api_name, api_data in context["api_data"].items():
+                integration_prompt += f"\n{api_name.upper()}: {str(api_data)}"
+
         integration_prompt += """
         
-        Basándote en los análisis anteriores, proporciona una respuesta integrada que:
-        1. Sintetice la información de todos los dominios relevantes
+        Basándote en los análisis anteriores y los datos de fuentes externas, proporciona una respuesta integrada que:
+        1. Sintetice la información de todos los dominios relevantes y fuentes externas
         2. Identifique y explique las interacciones entre dominios
         3. Presente una conclusión holística y recomendaciones prácticas
         4. Mantenga el rigor científico y la precisión técnica
+        5. Cite las fuentes externas cuando sea relevante
         """
 
         return integration_prompt

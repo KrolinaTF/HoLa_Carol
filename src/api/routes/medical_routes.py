@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, List
 from src.orchestrator.orchestrator import Orchestrator
 import logging
 from src.utils.database import get_session, Query, QueryResult
@@ -8,10 +8,13 @@ from src.utils.database import get_session, Query, QueryResult
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
 
+orchestrator = Orchestrator()
+
 class MedicalQuery(BaseModel):
     query: str
     user_id: str
     context: Dict[str, Any] = {}
+
 
 class MedicalResponse(BaseModel):
     response: str
@@ -39,8 +42,8 @@ async def process_medical_query(query: MedicalQuery):
         # Guardar el resultado
         db_result = QueryResult(
             query=db_query,
-            response=result.response,
-            confidence=result.confidence,
+            response=result['response'],
+            confidence=result['confidence'],
             domain='medical'
         )
         session.add(db_result)

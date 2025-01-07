@@ -8,6 +8,7 @@ from src.utils.logger import setup_logger
 from src.orchestrator.orchestrator import Orchestrator
 from dotenv import load_dotenv
 import os
+from .routes import auth_routes
 
 load_dotenv()
 
@@ -62,6 +63,7 @@ app.include_router(botanical_routes.router)
 app.include_router(chemical_routes.router)
 app.include_router(biological_routes.router)
 app.include_router(physical_routes.router)
+app.include_router(auth_routes.router)
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
